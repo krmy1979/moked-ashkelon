@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>מוקד אשקלון</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div><div class="t">מוקד אשקלון</div><div class="s">דיווח על מפגעים בעיר</div></div>
+  <span class="sp"></span>
+  <button id="logoutBtn" hidden>התנתק</button>
+</header>
+
+<main>
+  <section class="card" id="loading"><div class="muted">טוען…</div></section>
+
+  <section class="card" id="loginCard" hidden>
+    <h2>ברוכים הבאים</h2>
+    <div class="note">ראיתם פנס שלא דולק, בור בכביש או פסולת ברחוב? דווחו כאן בכמה לחיצות, עם תמונה ומיקום, ועקבו אחרי הטיפול.</div>
+    <div class="note">כדי שנוכל לעדכן אתכם על הטיפול, התחברו פעם אחת עם חשבון Google.</div>
+    <button class="primary big" id="loginBtn">התחבר עם Google</button>
+    <div class="err" id="loginErr"></div>
+  </section>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="new" class="on">דיווח חדש</button>
+    <button data-tab="mine">הדיווחים שלי</button>
+    <button data-tab="map">מפת מפגעים</button>
+  </nav>
+
+  <!-- New report -->
+  <section id="tab-new" hidden>
+    <div class="card">
+      <h2>1. מה המפגע?</h2>
+      <div class="cats" id="cats"></div>
+      <div class="chips" id="subs" hidden></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>2. איפה?</h2>
+      <div class="row">
+        <button id="gpsBtn">📍 השתמש במיקום שלי</button>
+        <span class="note" id="gpsNote">אפשר גם ללחוץ על המפה כדי לסמן את המקום.</span>
+      </div>
+      <div class="map" id="pickMap"></div>
+      <label for="addr">כתובת או ציון דרך (לא חובה)</label>
+      <input id="addr" maxlength="120" placeholder="לדוגמה: רחוב הרצל 12, ליד הגן">
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>3. פרטים ותמונה</h2>
+      <label for="desc">תיאור קצר</label>
+      <textarea id="desc" maxlength="600" placeholder="מה ראיתם? כמה זמן זה ככה?"></textarea>
+      <label for="photo">תמונה (מומלץ מאוד)</label>
+      <input type="file" id="photo" accept="image/*" capture="environment">
+      <img id="photoPrev" class="photo-prev" alt="תצוגה מקדימה של התמונה" hidden>
+      <div class="err" id="photoErr"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <button class="primary big" id="sendBtn">שלח דיווח למוקד</button>
+      <div class="err" id="sendErr"></div>
+      <div class="ok" id="sendOk" hidden></div>
+    </div>
+  </section>
+
+  <!-- My reports -->
+  <section class="card" id="tab-mine" hidden>
+    <h2>הדיווחים שלי</h2>
+    <div id="mineList" class="row" style="flex-direction:column;align-items:stretch"></div>
+    <div class="note" id="mineEmpty">עדיין לא שלחת דיווחים.</div>
+  </section>
+
+  <!-- Public map -->
+  <section class="card" id="tab-map" hidden>
+    <h2>מפגעים פתוחים בעיר</h2>
+    <div class="note">לפני שמדווחים, אפשר לבדוק כאן אם מישהו כבר דיווח על אותו מפגע.</div>
+    <div class="legend" id="legend"></div>
+    <div class="map tall" id="pubMap"></div>
+  </section>
+</main>
+
+<script type="module">
+import { initFirebase, googleSignIn, loadCategories, compressImage, fmtDate, esc, statusPill, STATUS, ASHKELON } from "./shared.js";
+const $ = id => document.getElementById(id);
+let fb, user, cats = [], cat = null, sub = null, pos = null, photo = null;
+let pickMap, pickMarker, pubMap, pubLayer, unsubMine = null, unsubPub = null;
+
+function showOnly(id){ for (const s of ["loading","loginCard"]) $(s).hidden = s !== id; }
+
+function setTab(t){
+  for (const b of $("tabs").querySelectorAll("button")) b.classList.toggle("on", b.dataset.tab === t);
+  for (const x of ["new","mine","map"]) $("tab-" + x).hidden = x !== t;
+  if (t === "new") setTimeout(() => pickMap && pickMap.invalidateSize(), 50);
+  if (t === "map") { initPubMap(); setTimeout(() => pubMap.invalidateSize(), 50); }
+}
+$("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
+
+// ---- categories
+function renderCats(){
+  const box = $("cats"); box.textContent = "";
+  cats.forEach(c => {
+    const b = document.createElement("button"); b.textContent = c.name;
+    b.classList.toggle("on", cat === c);
+    b.onclick = () => { cat = c; sub = null; renderCats(); };
+    box.appendChild(b);
+  });
+  const sb = $("subs"); sb.textContent = "";
+  sb.hidden = !cat || !cat.subs || !cat.subs.length;
+  if (cat) (cat.subs || []).forEach(s => {
+    const b = document.createElement("button"); b.textContent = s; b.classList.toggle("on", sub === s);
+    b.onclick = () => { sub = sub === s ? null : s; renderCats(); };
+    sb.appendChild(b);
+  });
+}
+
+// ---- location
+const tiles = () => L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" });
+function initPickMap(){
+  pickMap = L.map("pickMap").setView(ASHKELON, 13);
+  tiles().addTo(pickMap);
+  pickMap.on("click", e => setPos(e.latlng.lat, e.latlng.lng, "סומן על המפה"));
+}
+function setPos(lat, lng, note){
+  pos = { lat: +lat.toFixed(6), lng: +lng.toFixed(6) };
+  if (!pickMarker) {
+    pickMarker = L.marker([lat, lng], { draggable: true }).addTo(pickMap);
+    pickMarker.on("dragend", () => { const p = pickMarker.getLatLng(); setPos(p.lat, p.lng, "סומן על המפה"); });
+  } else pickMarker.setLatLng([lat, lng]);
+  pickMap.setView([lat, lng], Math.max(pickMap.getZoom(), 17));
+  $("gpsNote").textContent = note + ". אפשר לגרור את הסיכה לדיוק.";
+}
+$("gpsBtn").onclick = () => {
+  if (!navigator.geolocation) { $("gpsNote").textContent = "המכשיר לא תומך במיקום. סמנו על המפה."; return; }
+  $("gpsNote").textContent = "מאתר מיקום…";
+  navigator.geolocation.getCurrentPosition(
+    p => setPos(p.coords.latitude, p.coords.longitude, "המיקום שלך נמצא"),
+    () => { $("gpsNote").textContent = "לא הצלחתי לאתר מיקום. אשרו גישה למיקום, או סמנו על המפה."; },
+    { enableHighAccuracy: true, timeout: 12000 }
+  );
+};
+
+// ---- photo
+$("photo").onchange = async () => {
+  $("photoErr").textContent = ""; photo = null; $("photoPrev").hidden = true;
+  const f = $("photo").files[0]; if (!f) return;
+  try {
+    photo = await compressImage(f);
+    if (!photo) { $("photoErr").textContent = "התמונה גדולה מדי. נסו תמונה אחרת."; return; }
+    $("photoPrev").src = photo; $("photoPrev").hidden = false;
+  } catch(e){ $("photoErr").textContent = "לא הצלחתי לקרוא את התמונה."; }
+};
+
+// ---- send
+$("sendBtn").onclick = async () => {
+  $("sendErr").textContent = ""; $("sendOk").hidden = true;
+  if (!cat) { $("sendErr").textContent = "בחרו סוג מפגע."; return; }
+  if (!pos) { $("sendErr").textContent = "סמנו את המיקום: לחצו על 'השתמש במיקום שלי' או על המפה."; return; }
+  const desc = $("desc").value.trim();
+  if (!desc && !photo && !sub) { $("sendErr").textContent = "הוסיפו תיאור קצר או תמונה."; return; }
+  $("sendBtn").disabled = true; $("sendBtn").textContent = "שולח…";
+  try {
+    const { F, db } = fb;
+    const id = F.doc(F.collection(db, "reports")).id;
+    const now = F.serverTimestamp();
+    const b = F.writeBatch(db);
+    b.set(F.doc(db, "reports", id), {
+      uid: user.uid, reporter: user.displayName || "", email: user.email || "",
+      category: cat.name, sub: sub || "", dept: cat.dept || "",
+      desc, addr: $("addr").value.trim().slice(0,120), lat: pos.lat, lng: pos.lng,
+      photo: photo || "", status: "new", note: "", createdAt: now, updatedAt: now,
+      history: [{ status: "new", at: new Date().toISOString(), note: "" }]
+    });
+    b.set(F.doc(db, "public", id), { category: cat.name, sub: sub || "", lat: pos.lat, lng: pos.lng, status: "new", createdAt: now });
+    await b.commit();
+    $("sendOk").textContent = "הדיווח נשלח למוקד. תודה! אפשר לעקוב אחריו בלשונית 'הדיווחים שלי'.";
+    $("sendOk").hidden = false;
+    cat = null; sub = null; photo = null; $("desc").value = ""; $("addr").value = ""; $("photo").value = ""; $("photoPrev").hidden = true;
+    renderCats();
+  } catch(e){
+    $("sendErr").textContent = "השליחה נכשלה. בדקו חיבור לאינטרנט ונסו שוב.";
+    console.error(e);
+  } finally { $("sendBtn").disabled = false; $("sendBtn").textContent = "שלח דיווח למוקד"; }
+};
+
+// ---- my reports (live)
+function watchMine(){
+  const { F, db } = fb;
+  unsubMine = F.onSnapshot(F.query(F.collection(db, "reports"), F.where("uid", "==", user.uid)), snap => {
+    const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a,b) => ((b.createdAt && b.createdAt.seconds) || 9e9) - ((a.createdAt && a.createdAt.seconds) || 9e9));
+    $("mineEmpty").hidden = rows.length > 0;
+    $("mineList").innerHTML = rows.map(r => `
+      <div class="rep">
+        <div class="h"><span class="cat">${esc(r.category)}${r.sub ? " · " + esc(r.sub) : ""}</span>${statusPill(r.status)}</div>
+        <div class="note">${esc(fmtDate(r.createdAt))}${r.addr ? " · " + esc(r.addr) : ""}</div>
+        ${r.desc ? `<div>${esc(r.desc)}</div>` : ""}
+        ${r.note ? `<div><b>תגובת המוקד:</b> ${esc(r.note)}</div>` : ""}
+        ${r.photo ? `<img class="photo-prev" src="${esc(r.photo)}" alt="תמונת המפגע">` : ""}
+        <ol class="timeline">${(r.history||[]).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}</li>`).join("")}</ol>
+      </div>`).join("");
+  }, () => { $("mineEmpty").textContent = "לא הצלחתי לטעון את הדיווחים."; $("mineEmpty").hidden = false; });
+}
+
+// ---- public map (live)
+function initPubMap(){
+  if (pubMap) return;
+  pubMap = L.map("pubMap").setView(ASHKELON, 13);
+  tiles().addTo(pubMap);
+  pubLayer = L.layerGroup().addTo(pubMap);
+  $("legend").innerHTML = ["new","in_progress"].map(k => `<span><i style="background:${STATUS[k].color}"></i>${STATUS[k].label}</span>`).join("");
+  const { F, db } = fb;
+  unsubPub = F.onSnapshot(F.query(F.collection(db, "public"), F.where("status", "in", ["new","in_progress"])), snap => {
+    pubLayer.clearLayers();
+    snap.docs.forEach(d => {
+      const r = d.data();
+      L.circleMarker([r.lat, r.lng], { radius: 8, color: STATUS[r.status].color, fillOpacity: .8 })
+        .bindPopup(`<b>${esc(r.category)}</b>${r.sub ? "<br>" + esc(r.sub) : ""}<br>${STATUS[r.status].label} · ${esc(fmtDate(r.createdAt))}`)
+        .addTo(pubLayer);
+    });
+  });
+}
+
+// ---- auth
+$("loginBtn").onclick = async () => { $("loginErr").textContent = ""; try { await googleSignIn(fb); } catch(e){ $("loginErr").textContent = "ההתחברות נכשלה: " + (e.code || e.message); } };
+$("logoutBtn").onclick = () => fb.A.signOut(fb.auth);
+
+(async () => {
+  try { fb = await initFirebase(); }
+  catch(e){ $("loading").innerHTML = '<div class="err">אין חיבור לאינטרנט. רעננו את הדף.</div>'; return; }
+  fb.A.onAuthStateChanged(fb.auth, async u => {
+    user = u;
+    if (unsubMine) { unsubMine(); unsubMine = null; }
+    if (!u) { showOnly("loginCard"); $("tabs").hidden = true; for (const x of ["new","mine","map"]) $("tab-" + x).hidden = true; $("logoutBtn").hidden = true; return; }
+    showOnly(null); $("tabs").hidden = false; $("logoutBtn").hidden = false;
+    cats = await loadCategories(fb); renderCats();
+    if (!pickMap) initPickMap();
+    setTab("new");
+    watchMine();
+  });
+})();
+</script>
+</body>
+</html>

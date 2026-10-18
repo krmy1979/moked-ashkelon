@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>מסך מוקד</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div><div class="t">מסך מוקד · אשקלון</div><div class="s" id="who"></div></div>
+  <span class="sp"></span>
+  <button id="logoutBtn" hidden>התנתק</button>
+</header>
+
+<main class="wide">
+  <section class="card" id="loading"><div class="muted">טוען…</div></section>
+
+  <section class="card" id="loginCard" hidden>
+    <h2>כניסת מוקדנים</h2>
+    <button class="primary big" id="loginBtn">התחבר עם Google</button>
+    <div class="err" id="loginErr"></div>
+  </section>
+
+  <section class="card" id="noAccess" hidden>
+    <h2>אין לך הרשאת מוקדן</h2>
+    <div class="note">כדי לקבל הרשאה, שלח למנהל המערכת את המזהה הזה:</div>
+    <input id="myUid" readonly>
+    <button id="logout2">התנתק</button>
+  </section>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="list" class="on">דיווחים</button>
+    <button data-tab="map">מפה</button>
+    <button data-tab="settings">קטגוריות והרשאות</button>
+  </nav>
+
+  <section id="tab-list" hidden>
+    <div class="card">
+      <div class="row">
+        <select id="fStatus" class="grow" style="min-width:130px">
+          <option value="open">פתוחים (התקבל + בטיפול)</option>
+          <option value="all">הכול</option>
+          <option value="new">התקבל</option><option value="in_progress">בטיפול</option>
+          <option value="done">טופל</option><option value="rejected">לא לטיפול</option>
+        </select>
+        <select id="fCat" class="grow" style="min-width:150px"><option value="">כל הקטגוריות</option></select>
+        <input id="fText" class="grow" style="min-width:160px" placeholder="חיפוש בכתובת או בתיאור">
+      </div>
+      <div class="note" id="count"></div>
+      <table>
+        <thead><tr><th>נפתח</th><th>קטגוריה</th><th class="hide-sm">מחלקה</th><th class="hide-sm">כתובת / תיאור</th><th>סטטוס</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="detail" hidden style="margin-top:14px">
+      <div class="row"><h2 class="grow" id="dTitle"></h2><button id="dClose">סגור</button></div>
+      <div class="note" id="dMeta"></div>
+      <div id="dDesc"></div>
+      <img id="dPhoto" class="photo-prev" alt="תמונת המפגע" hidden>
+      <div class="map" id="dMap"></div>
+      <a id="dNav" target="_blank" rel="noopener">פתח ניווט במפות Google</a>
+      <ol class="timeline" id="dHist"></ol>
+      <label for="dStatus">עדכון סטטוס</label>
+      <select id="dStatus">
+        <option value="new">התקבל</option><option value="in_progress">בטיפול</option>
+        <option value="done">טופל</option><option value="rejected">לא לטיפול</option>
+      </select>
+      <label for="dNote">הודעה לתושב (תוצג לו בדיווח)</label>
+      <textarea id="dNote" maxlength="400" placeholder="לדוגמה: הועבר לצוות התאורה, צפי טיפול עד יום חמישי"></textarea>
+      <button class="primary" id="dSave">שמור ועדכן את התושב</button>
+      <div class="err" id="dErr"></div>
+    </div>
+  </section>
+
+  <section class="card" id="tab-map" hidden>
+    <div class="legend" id="legend"></div>
+    <div class="map tall" id="allMap"></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="card">
+      <h2>קטגוריות</h2>
+      <div class="note">כל שורה היא קטגוריה אחת, בפורמט:<br><b>שם הקטגוריה | מחלקה מטפלת | תת־קטגוריה, תת־קטגוריה, …</b><br>השינוי מופיע מיד באפליקציית התושבים.</div>
+      <textarea id="catText" style="min-height:280px;font-size:15px"></textarea>
+      <div class="row"><button class="primary" id="catSave">שמור קטגוריות</button><button id="catReset">שחזר ברירת מחדל</button></div>
+      <div class="err" id="catErr"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>הוספת מוקדן</h2>
+      <div class="note">המוקדן נכנס לכתובת של מסך המוקד, מתחבר עם Google, ושולח לך את המזהה שמופיע לו. הדבק אותו כאן:</div>
+      <div class="row"><input id="newAdmin" class="grow" placeholder="מזהה משתמש"><input id="newAdminName" class="grow" placeholder="שם (לזיהוי)"><button id="addAdmin">הוסף</button></div>
+      <div class="err" id="adminErr"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { initFirebase, googleSignIn, loadCategories, DEFAULT_CATEGORIES, fmtDate, esc, statusPill, STATUS, ASHKELON } from "./shared.js";
+const $ = id => document.getElementById(id);
+let fb, user, cats = [], all = [], cur = null, unsub = null;
+let dMap, dMarker, allMap, allLayer;
+const tiles = () => L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" });
+
+function only(id){ for (const s of ["loading","loginCard","noAccess"]) $(s).hidden = s !== id; }
+function setTab(t){
+  for (const b of $("tabs").querySelectorAll("button")) b.classList.toggle("on", b.dataset.tab === t);
+  for (const x of ["list","map","settings"]) $("tab-" + x).hidden = x !== t;
+  if (t === "map") { initAllMap(); setTimeout(() => { allMap.invalidateSize(); drawAll(); }, 50); }
+}
+$("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
+
+// ---- list
+function filtered(){
+  const st = $("fStatus").value, c = $("fCat").value, q = $("fText").value.trim();
+  return all.filter(r =>
+    (st === "all" || (st === "open" ? (r.status === "new" || r.status === "in_progress") : r.status === st)) &&
+    (!c || r.category === c) &&
+    (!q || (r.addr + " " + r.desc + " " + r.sub).includes(q)));
+}
+function render(){
+  const rows = filtered();
+  $("count").textContent = rows.length + " דיווחים";
+  $("rows").innerHTML = rows.map(r => `
+    <tr class="click" data-id="${r.id}">
+      <td>${esc(fmtDate(r.createdAt))}</td>
+      <td><b>${esc(r.category)}</b>${r.sub ? "<br><span class='note'>" + esc(r.sub) + "</span>" : ""}</td>
+      <td class="hide-sm">${esc(r.dept)}</td>
+      <td class="hide-sm">${esc(r.addr)}${r.addr && r.desc ? "<br>" : ""}<span class="note">${esc((r.desc||"").slice(0,80))}</span></td>
+      <td>${statusPill(r.status)}</td>
+    </tr>`).join("");
+}
+for (const id of ["fStatus","fCat","fText"]) $(id).addEventListener("input", render);
+$("rows").addEventListener("click", e => { const tr = e.target.closest("tr"); if (tr) openDetail(tr.dataset.id); });
+
+// ---- detail
+function openDetail(id){
+  cur = all.find(r => r.id === id); if (!cur) return;
+  $("detail").hidden = false; $("dErr").textContent = "";
+  $("dTitle").textContent = cur.category + (cur.sub ? " · " + cur.sub : "");
+  $("dMeta").textContent = [fmtDate(cur.createdAt), cur.addr, cur.reporter, cur.email].filter(Boolean).join(" · ");
+  $("dDesc").textContent = cur.desc || "";
+  $("dPhoto").hidden = !cur.photo; if (cur.photo) $("dPhoto").src = cur.photo;
+  $("dStatus").value = cur.status; $("dNote").value = cur.note || "";
+  $("dNav").href = `https://www.google.com/maps/search/?api=1&query=${cur.lat},${cur.lng}`;
+  $("dHist").innerHTML = (cur.history || []).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}</li>`).join("");
+  if (!dMap) { dMap = L.map("dMap"); tiles().addTo(dMap); }
+  dMap.setView([cur.lat, cur.lng], 17);
+  if (dMarker) dMarker.setLatLng([cur.lat, cur.lng]); else dMarker = L.marker([cur.lat, cur.lng]).addTo(dMap);
+  setTimeout(() => dMap.invalidateSize(), 50);
+  $("detail").scrollIntoView({ behavior: "smooth" });
+}
+$("dClose").onclick = () => { $("detail").hidden = true; cur = null; };
+$("dSave").onclick = async () => {
+  if (!cur) return;
+  const status = $("dStatus").value, note = $("dNote").value.trim().slice(0,400);
+  const { F, db } = fb;
+  $("dSave").disabled = true; $("dErr").textContent = "";
+  try {
+    const b = F.writeBatch(db);
+    b.update(F.doc(db, "reports", cur.id), { status, note, updatedAt: F.serverTimestamp(),
+      history: F.arrayUnion({ status, at: new Date().toISOString(), note }) });
+    b.update(F.doc(db, "public", cur.id), { status });
+    await b.commit();
+    $("dErr").innerHTML = '<span class="ok">עודכן. התושב רואה את העדכון באפליקציה.</span>';
+  } catch(e){ $("dErr").textContent = "העדכון נכשל: " + (e.code || e.message); }
+  finally { $("dSave").disabled = false; }
+};
+
+// ---- map
+function initAllMap(){
+  if (allMap) return;
+  allMap = L.map("allMap").setView(ASHKELON, 13); tiles().addTo(allMap);
+  allLayer = L.layerGroup().addTo(allMap);
+  $("legend").innerHTML = Object.values(STATUS).map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join("");
+}
+function drawAll(){
+  if (!allLayer) return;
+  allLayer.clearLayers();
+  filtered().forEach(r => L.circleMarker([r.lat, r.lng], { radius: 8, color: (STATUS[r.status]||STATUS.new).color, fillOpacity: .8 })
+    .bindPopup(`<b>${esc(r.category)}</b>${r.sub ? "<br>" + esc(r.sub) : ""}<br>${esc(r.addr || "")}<br>${(STATUS[r.status]||STATUS.new).label}`)
+    .on("click", () => { setTab("list"); openDetail(r.id); }).addTo(allLayer));
+}
+
+// ---- categories editor
+const toText = list => list.map(c => [c.name, c.dept || "", (c.subs || []).join(", ")].join(" | ")).join("\n");
+function fromText(t){
+  return t.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+    const [name, dept, subs] = l.split("|").map(x => (x || "").trim());
+    return { name: name.slice(0,60), dept: (dept || "").slice(0,60), subs: (subs || "").split(",").map(s => s.trim()).filter(Boolean).slice(0,30) };
+  }).filter(c => c.name);
+}
+function fillCatUI(){
+  $("catText").value = toText(cats);
+  $("fCat").innerHTML = '<option value="">כל הקטגוריות</option>' + cats.map(c => `<option>${esc(c.name)}</option>`).join("");
+}
+$("catSave").onclick = async () => {
+  const list = fromText($("catText").value);
+  if (!list.length) { $("catErr").textContent = "צריך לפחות קטגוריה אחת."; return; }
+  try { await fb.F.setDoc(fb.F.doc(fb.db, "config", "categories"), { list, updatedAt: fb.F.serverTimestamp() });
+        cats = list; fillCatUI(); $("catErr").innerHTML = '<span class="ok">נשמר. התושבים יראו את הקטגוריות החדשות.</span>'; }
+  catch(e){ $("catErr").textContent = "השמירה נכשלה: " + (e.code || e.message); }
+};
+$("catReset").onclick = () => { $("catText").value = toText(DEFAULT_CATEGORIES); $("catErr").textContent = "לחץ 'שמור' כדי להחיל."; };
+$("addAdmin").onclick = async () => {
+  const uid = $("newAdmin").value.trim(), name = $("newAdminName").value.trim().slice(0,60);
+  if (!/^[A-Za-z0-9]{20,40}$/.test(uid)) { $("adminErr").textContent = "המזהה לא תקין."; return; }
+  try { await fb.F.setDoc(fb.F.doc(fb.db, "admins", uid), { name, addedBy: user.uid });
+        $("adminErr").innerHTML = '<span class="ok">המוקדן נוסף. שיכנס מחדש למסך המוקד.</span>'; $("newAdmin").value = ""; $("newAdminName").value = ""; }
+  catch(e){ $("adminErr").textContent = "ההוספה נכשלה: " + (e.code || e.message); }
+};
+
+// ---- auth
+$("loginBtn").onclick = async () => { $("loginErr").textContent = ""; try { await googleSignIn(fb); } catch(e){ $("loginErr").textContent = "ההתחברות נכשלה: " + (e.code || e.message); } };
+$("logoutBtn").onclick = $("logout2").onclick = () => fb.A.signOut(fb.auth);
+
+(async () => {
+  try { fb = await initFirebase(); } catch(e){ $("loading").innerHTML = '<div class="err">אין חיבור לאינטרנט.</div>'; return; }
+  fb.A.onAuthStateChanged(fb.auth, async u => {
+    user = u; if (unsub) { unsub(); unsub = null; }
+    $("tabs").hidden = true; for (const x of ["list","map","settings"]) $("tab-" + x).hidden = true;
+    $("logoutBtn").hidden = !u; $("who").textContent = u ? (u.displayName || u.email) : "";
+    if (!u) { only("loginCard"); return; }
+    const adm = await fb.F.getDoc(fb.F.doc(fb.db, "admins", u.uid)).catch(() => null);
+    if (!adm || !adm.exists()) { only("noAccess"); $("myUid").value = u.uid; return; }
+    only(null); $("tabs").hidden = false; setTab("list");
+    cats = await loadCategories(fb); fillCatUI();
+    const { F, db } = fb;
+    unsub = F.onSnapshot(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(500)), snap => {
+      all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      render(); drawAll();
+      if (cur) { const n = all.find(r => r.id === cur.id); if (n) cur = n; }
+    }, e => { $("count").textContent = "שגיאה בטעינה: " + (e.code || e.message); });
+  });
+})();
+</script>
+</body>
+</html>

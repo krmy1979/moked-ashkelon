@@ -1,0 +1,52 @@
+rules_version = '2';
+// Moked Ashkelon security rules (published in the Firebase console, kept here for reference)
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+
+    // Full reports: the resident who sent it and call-center staff can read; only staff can update status.
+    match /reports/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'new'
+        && request.resource.data.keys().hasOnly(['uid','reporter','email','category','sub','dept','desc','addr','lat','lng','photo','status','note','createdAt','updatedAt','history'])
+        && request.resource.data.category is string && request.resource.data.category.size() <= 60
+        && request.resource.data.desc is string && request.resource.data.desc.size() <= 600
+        && request.resource.data.photo is string && request.resource.data.photo.size() <= 300000
+        && request.resource.data.lat is number && request.resource.data.lng is number
+        && request.resource.data.history.size() == 1;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','note','updatedAt','history'])
+        && request.resource.data.status in ['new','in_progress','done','rejected'];
+      allow delete: if isAdmin();
+    }
+
+    // Public map pins: no names, emails, photos or descriptions.
+    match /public/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && getAfter(/databases/$(database)/documents/reports/$(id)).data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['category','sub','lat','lng','status','createdAt'])
+        && request.resource.data.status == 'new';
+      allow update: if isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+      allow delete: if isAdmin();
+    }
+
+    // Categories list, edited from the call-center screen.
+    match /config/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Call-center staff. Staff can add other staff.
+    match /admins/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin() && request.auth.uid != uid;
+    }
+  }
+}
