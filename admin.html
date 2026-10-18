@@ -37,7 +37,7 @@
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="list" class="on">דיווחים</button>
     <button data-tab="map">מפה</button>
-    <button data-tab="settings">קטגוריות והרשאות</button>
+    <button data-tab="settings" id="settingsTabBtn">ניהול (מנהלים)</button>
   </nav>
 
   <section id="tab-list" hidden>
@@ -88,7 +88,7 @@
       </select>
       <label for="dNote">הודעה לתושב (תוצג לו בדיווח)</label>
       <textarea id="dNote" maxlength="400" placeholder="לדוגמה: הועבר לצוות התאורה, צפי טיפול עד יום חמישי"></textarea>
-      <button class="primary" id="dSave">שמור ועדכן את התושב</button>
+      <div class="row"><button class="primary grow" id="dSave">שמור ועדכן את התושב</button><button id="dDelete" class="small" hidden>מחק פנייה (ספאם)</button></div>
       <div class="err" id="dErr"></div>
     </div>
   </section>
@@ -107,9 +107,20 @@
       <div class="err" id="catErr"></div>
     </div>
     <div class="card" style="margin-top:14px">
-      <h2>הוספת מוקדן</h2>
-      <div class="note">המוקדן נכנס לכתובת של מסך המוקד, מתחבר עם Google, ושולח לך את המזהה שמופיע לו. הדבק אותו כאן:</div>
-      <div class="row"><input id="newAdmin" class="grow" placeholder="מזהה משתמש"><input id="newAdminName" class="grow" placeholder="שם (לזיהוי)"><button id="addAdmin">הוסף</button></div>
+      <h2>צוות והרשאות</h2>
+      <div class="note"><b>מוקדן:</b> רואה ומטפל בכל הפניות, מעדכן סטטוס, כותב לתושב ומתקן סיווג.<br><b>מנהל:</b> כל מה שמוקדן יכול, ובנוסף עורך קטגוריות, מוסיף ומסיר אנשי צוות וקובע הרשאות.</div>
+      <table>
+        <thead><tr><th>שם</th><th>הרשאה</th><th></th></tr></thead>
+        <tbody id="staffRows"></tbody>
+      </table>
+      <h2 style="margin-top:8px">הוספת איש צוות</h2>
+      <div class="note">איש הצוות נכנס לכתובת של מסך המוקד, מתחבר עם Google, ושולח לך את המזהה שמופיע לו. הדבק אותו כאן:</div>
+      <div class="row">
+        <input id="newAdmin" class="grow" placeholder="מזהה משתמש" style="min-width:200px">
+        <input id="newAdminName" class="grow" placeholder="שם" style="min-width:120px">
+        <select id="newAdminRole" style="width:auto"><option value="operator">מוקדן</option><option value="manager">מנהל</option></select>
+        <button id="addAdmin">הוסף</button>
+      </div>
       <div class="err" id="adminErr"></div>
     </div>
   </section>
@@ -118,7 +129,9 @@
 <script type="module">
 import { initFirebase, googleSignIn, loadCategories, DEFAULT_CATEGORIES, fmtDate, esc, statusPill, STATUS, ASHKELON, kindOf } from "./shared.js";
 const $ = id => document.getElementById(id);
-let fb, user, cats = [], all = [], cur = null, unsub = null;
+let fb, user, cats = [], all = [], cur = null, unsub = null, myRole = "operator", unsubStaff = null;
+const ROLE = { manager: "מנהל", operator: "מוקדן" };
+const roleOf = d => (d && d.role === "operator") ? "operator" : "manager"; // staff added before roles existed are managers
 let dMap, dMarker, allMap, allLayer;
 const tiles = () => L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" });
 
@@ -179,6 +192,17 @@ function openDetail(id){
   $("detail").scrollIntoView({ behavior: "smooth" });
 }
 $("dClose").onclick = () => { $("detail").hidden = true; cur = null; };
+
+$("dDelete").onclick = async () => {
+  if (!cur || !confirm("למחוק את הפנייה לגמרי? אי אפשר לשחזר. מתאים לפניות סרק או ספאם.")) return;
+  const { F, db } = fb;
+  try {
+    const b = F.writeBatch(db);
+    b.delete(F.doc(db, "reports", cur.id));
+    if ((cur.kind || "hazard") === "hazard") b.delete(F.doc(db, "public", cur.id));
+    await b.commit(); $("detail").hidden = true; cur = null;
+  } catch(e){ $("dErr").textContent = "המחיקה נכשלה: " + (e.code || e.message); }
+};
 
 // ---- category correction by the call center
 function fillEdit(){
@@ -259,12 +283,41 @@ $("catSave").onclick = async () => {
 };
 $("catReset").onclick = () => { $("catText").value = toText(DEFAULT_CATEGORIES); $("catErr").textContent = "לחץ 'שמור' כדי להחיל."; };
 $("addAdmin").onclick = async () => {
-  const uid = $("newAdmin").value.trim(), name = $("newAdminName").value.trim().slice(0,60);
+  const uid = $("newAdmin").value.trim(), name = $("newAdminName").value.trim().slice(0,60), role = $("newAdminRole").value;
   if (!/^[A-Za-z0-9]{20,40}$/.test(uid)) { $("adminErr").textContent = "המזהה לא תקין."; return; }
-  try { await fb.F.setDoc(fb.F.doc(fb.db, "admins", uid), { name, addedBy: user.uid });
-        $("adminErr").innerHTML = '<span class="ok">המוקדן נוסף. שיכנס מחדש למסך המוקד.</span>'; $("newAdmin").value = ""; $("newAdminName").value = ""; }
+  if (!name) { $("adminErr").textContent = "כתוב שם, כדי שיהיה ברור מי זה ברשימה."; return; }
+  try { await fb.F.setDoc(fb.F.doc(fb.db, "admins", uid), { name, role, addedBy: user.uid });
+        $("adminErr").innerHTML = `<span class="ok">${esc(name)} נוסף כ${ROLE[role]}. שירענן את מסך המוקד.</span>`; $("newAdmin").value = ""; $("newAdminName").value = ""; }
   catch(e){ $("adminErr").textContent = "ההוספה נכשלה: " + (e.code || e.message); }
 };
+
+// ---- staff list (managers only)
+function watchStaff(){
+  const { F, db } = fb;
+  unsubStaff = F.onSnapshot(F.collection(db, "admins"), snap => {
+    const rows = snap.docs.map(d => ({ id: d.id, ...d.data(), role: roleOf(d.data()) }))
+      .sort((a,b) => (a.role === b.role ? (a.name || "").localeCompare(b.name || "", "he") : a.role === "manager" ? -1 : 1));
+    $("staffRows").innerHTML = rows.map(r => `
+      <tr data-id="${esc(r.id)}">
+        <td>${esc(r.name || "(ללא שם)")}${r.id === user.uid ? " <span class='note'>(אתה)</span>" : ""}<br><span class="note" style="font-size:12px">${esc(r.id)}</span></td>
+        <td>${r.id === user.uid ? ROLE[r.role] : `<select data-act="role" style="width:auto"><option value="operator"${r.role === "operator" ? " selected" : ""}>מוקדן</option><option value="manager"${r.role === "manager" ? " selected" : ""}>מנהל</option></select>`}</td>
+        <td>${r.id === user.uid ? "" : `<button data-act="del" class="small">הסר</button>`}</td>
+      </tr>`).join("");
+  }, () => { $("staffRows").innerHTML = '<tr><td colspan="3" class="err">לא הצלחתי לטעון את רשימת הצוות.</td></tr>'; });
+}
+$("staffRows").addEventListener("change", async e => {
+  const sel = e.target.closest("select[data-act=role]"); if (!sel) return;
+  const id = sel.closest("tr").dataset.id;
+  try { await fb.F.updateDoc(fb.F.doc(fb.db, "admins", id), { role: sel.value }); $("adminErr").innerHTML = '<span class="ok">ההרשאה עודכנה.</span>'; }
+  catch(err){ $("adminErr").textContent = "העדכון נכשל: " + (err.code || err.message); }
+});
+$("staffRows").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-act=del]"); if (!btn) return;
+  const tr = btn.closest("tr"), id = tr.dataset.id, name = tr.querySelector("td").firstChild.textContent;
+  if (!confirm("להסיר את " + name + " מהצוות? הוא לא יוכל להיכנס יותר למסך המוקד.")) return;
+  try { await fb.F.deleteDoc(fb.F.doc(fb.db, "admins", id)); $("adminErr").innerHTML = '<span class="ok">הוסר.</span>'; }
+  catch(err){ $("adminErr").textContent = "ההסרה נכשלה: " + (err.code || err.message); }
+});
 
 // ---- auth
 $("loginBtn").onclick = async () => { $("loginErr").textContent = ""; try { await googleSignIn(fb); } catch(e){ $("loginErr").textContent = "ההתחברות נכשלה: " + (e.code || e.message); } };
@@ -273,13 +326,18 @@ $("logoutBtn").onclick = $("logout2").onclick = () => fb.A.signOut(fb.auth);
 (async () => {
   try { fb = await initFirebase(); } catch(e){ $("loading").innerHTML = '<div class="err">אין חיבור לאינטרנט.</div>'; return; }
   fb.A.onAuthStateChanged(fb.auth, async u => {
-    user = u; if (unsub) { unsub(); unsub = null; }
+    user = u; if (unsub) { unsub(); unsub = null; } if (unsubStaff) { unsubStaff(); unsubStaff = null; }
     $("tabs").hidden = true; for (const x of ["list","map","settings"]) $("tab-" + x).hidden = true;
     $("logoutBtn").hidden = !u; $("who").textContent = u ? (u.displayName || u.email) : "";
     if (!u) { only("loginCard"); return; }
     const adm = await fb.F.getDoc(fb.F.doc(fb.db, "admins", u.uid)).catch(() => null);
     if (!adm || !adm.exists()) { only("noAccess"); $("myUid").value = u.uid; return; }
+    myRole = roleOf(adm.data());
+    $("who").textContent = (u.displayName || u.email) + " · " + ROLE[myRole];
+    $("settingsTabBtn").hidden = myRole !== "manager";
+    $("dDelete").hidden = myRole !== "manager";
     only(null); $("tabs").hidden = false; setTab("list");
+    if (myRole === "manager") watchStaff();
     cats = await loadCategories(fb); fillCatUI();
     const { F, db } = fb;
     unsub = F.onSnapshot(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(500)), snap => {
