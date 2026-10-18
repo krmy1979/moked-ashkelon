@@ -49,6 +49,9 @@
           <option value="new">התקבל</option><option value="in_progress">בטיפול</option>
           <option value="done">טופל</option><option value="rejected">לא לטיפול</option>
         </select>
+        <select id="fKind" class="grow" style="min-width:120px">
+          <option value="">מפגעים ופניות</option><option value="hazard">מפגעים</option><option value="request">פניות ובקשות</option>
+        </select>
         <select id="fCat" class="grow" style="min-width:150px"><option value="">כל הקטגוריות</option></select>
         <input id="fText" class="grow" style="min-width:160px" placeholder="חיפוש בכתובת או בתיאור">
       </div>
@@ -62,10 +65,21 @@
     <div class="card" id="detail" hidden style="margin-top:14px">
       <div class="row"><h2 class="grow" id="dTitle"></h2><button id="dClose">סגור</button></div>
       <div class="note" id="dMeta"></div>
+      <div id="dPhone" hidden></div>
       <div id="dDesc"></div>
-      <img id="dPhoto" class="photo-prev" alt="תמונת המפגע" hidden>
+      <img id="dPhoto" class="photo-prev" alt="תמונה שצורפה" hidden>
       <div class="map" id="dMap"></div>
       <a id="dNav" target="_blank" rel="noopener">פתח ניווט במפות Google</a>
+      <details id="dEditBox" style="border:1px solid var(--line);border-radius:10px;padding:10px">
+        <summary style="cursor:pointer;font-weight:600">תיקון סיווג ופרטים</summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <label for="eCat">קטגוריה</label><select id="eCat"></select>
+          <label for="eSub">תת־קטגוריה</label><select id="eSub"></select>
+          <label for="eDept">מחלקה מטפלת</label><input id="eDept" maxlength="60">
+          <label for="eAddr">כתובת</label><input id="eAddr" maxlength="120">
+          <div class="note">התיאור המקורי של התושב לא משתנה. כל תיקון נרשם בהיסטוריה.</div>
+        </div>
+      </details>
       <ol class="timeline" id="dHist"></ol>
       <label for="dStatus">עדכון סטטוס</label>
       <select id="dStatus">
@@ -87,7 +101,7 @@
   <section id="tab-settings" hidden>
     <div class="card">
       <h2>קטגוריות</h2>
-      <div class="note">כל שורה היא קטגוריה אחת, בפורמט:<br><b>שם הקטגוריה | מחלקה מטפלת | תת־קטגוריה, תת־קטגוריה, …</b><br>השינוי מופיע מיד באפליקציית התושבים.</div>
+      <div class="note">כל שורה היא קטגוריה אחת, בפורמט:<br><b>שם הקטגוריה | מחלקה מטפלת | תת־קטגוריה, תת־קטגוריה, … | סוג</b><br>בעמודת הסוג כתבו <b>מפגע</b> (דורש מיקום ומופיע במפה הציבורית) או <b>פנייה</b> (בקשה או בירור, בלי מיקום, לא מופיע במפה). אם לא כתוב כלום, זה מפגע.<br>השינוי מופיע מיד באפליקציית התושבים.</div>
       <textarea id="catText" style="min-height:280px;font-size:15px"></textarea>
       <div class="row"><button class="primary" id="catSave">שמור קטגוריות</button><button id="catReset">שחזר ברירת מחדל</button></div>
       <div class="err" id="catErr"></div>
@@ -102,7 +116,7 @@
 </main>
 
 <script type="module">
-import { initFirebase, googleSignIn, loadCategories, DEFAULT_CATEGORIES, fmtDate, esc, statusPill, STATUS, ASHKELON } from "./shared.js";
+import { initFirebase, googleSignIn, loadCategories, DEFAULT_CATEGORIES, fmtDate, esc, statusPill, STATUS, ASHKELON, kindOf } from "./shared.js";
 const $ = id => document.getElementById(id);
 let fb, user, cats = [], all = [], cur = null, unsub = null;
 let dMap, dMarker, allMap, allLayer;
@@ -118,11 +132,12 @@ $("tabs").addEventListener("click", e => { const b = e.target.closest("button");
 
 // ---- list
 function filtered(){
-  const st = $("fStatus").value, c = $("fCat").value, q = $("fText").value.trim();
+  const st = $("fStatus").value, c = $("fCat").value, q = $("fText").value.trim(), k = $("fKind").value;
   return all.filter(r =>
     (st === "all" || (st === "open" ? (r.status === "new" || r.status === "in_progress") : r.status === st)) &&
     (!c || r.category === c) &&
-    (!q || (r.addr + " " + r.desc + " " + r.sub).includes(q)));
+    (!k || (r.kind || "hazard") === k) &&
+    (!q || [r.addr, r.desc, r.sub, r.phone, r.reporter].join(" ").includes(q)));
 }
 function render(){
   const rows = filtered();
@@ -130,13 +145,13 @@ function render(){
   $("rows").innerHTML = rows.map(r => `
     <tr class="click" data-id="${r.id}">
       <td>${esc(fmtDate(r.createdAt))}</td>
-      <td><b>${esc(r.category)}</b>${r.sub ? "<br><span class='note'>" + esc(r.sub) + "</span>" : ""}</td>
+      <td>${r.kind === "request" ? "<span class='pill' style='--c:#7a5bb5'>פנייה</span> " : ""}<b>${esc(r.category)}</b>${r.sub ? "<br><span class='note'>" + esc(r.sub) + "</span>" : ""}</td>
       <td class="hide-sm">${esc(r.dept)}</td>
       <td class="hide-sm">${esc(r.addr)}${r.addr && r.desc ? "<br>" : ""}<span class="note">${esc((r.desc||"").slice(0,80))}</span></td>
       <td>${statusPill(r.status)}</td>
     </tr>`).join("");
 }
-for (const id of ["fStatus","fCat","fText"]) $(id).addEventListener("input", render);
+for (const id of ["fStatus","fCat","fText","fKind"]) $(id).addEventListener("input", () => { render(); drawAll(); });
 $("rows").addEventListener("click", e => { const tr = e.target.closest("tr"); if (tr) openDetail(tr.dataset.id); });
 
 // ---- detail
@@ -146,27 +161,61 @@ function openDetail(id){
   $("dTitle").textContent = cur.category + (cur.sub ? " · " + cur.sub : "");
   $("dMeta").textContent = [fmtDate(cur.createdAt), cur.addr, cur.reporter, cur.email].filter(Boolean).join(" · ");
   $("dDesc").textContent = cur.desc || "";
+  $("dPhone").hidden = !cur.phone;
+  $("dPhone").innerHTML = cur.phone ? `<b>טלפון לחזרה:</b> <a href="tel:${esc(cur.phone.replace(/[^\d+]/g,""))}">${esc(cur.phone)}</a>` : "";
+  fillEdit();
   $("dPhoto").hidden = !cur.photo; if (cur.photo) $("dPhoto").src = cur.photo;
   $("dStatus").value = cur.status; $("dNote").value = cur.note || "";
-  $("dNav").href = `https://www.google.com/maps/search/?api=1&query=${cur.lat},${cur.lng}`;
-  $("dHist").innerHTML = (cur.history || []).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}</li>`).join("");
-  if (!dMap) { dMap = L.map("dMap"); tiles().addTo(dMap); }
-  dMap.setView([cur.lat, cur.lng], 17);
-  if (dMarker) dMarker.setLatLng([cur.lat, cur.lng]); else dMarker = L.marker([cur.lat, cur.lng]).addTo(dMap);
-  setTimeout(() => dMap.invalidateSize(), 50);
+  const hasLoc = typeof cur.lat === "number" && typeof cur.lng === "number";
+  $("dMap").hidden = !hasLoc; $("dNav").hidden = !hasLoc;
+  $("dNav").href = hasLoc ? `https://www.google.com/maps/search/?api=1&query=${cur.lat},${cur.lng}` : "#";
+  $("dHist").innerHTML = (cur.history || []).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}${h.edit ? " · <i>" + esc(h.edit) + "</i>" : ""}</li>`).join("");
+  if (hasLoc) {
+    if (!dMap) { dMap = L.map("dMap"); tiles().addTo(dMap); }
+    dMap.setView([cur.lat, cur.lng], 17);
+    if (dMarker) dMarker.setLatLng([cur.lat, cur.lng]); else dMarker = L.marker([cur.lat, cur.lng]).addTo(dMap);
+    setTimeout(() => dMap.invalidateSize(), 50);
+  }
   $("detail").scrollIntoView({ behavior: "smooth" });
 }
 $("dClose").onclick = () => { $("detail").hidden = true; cur = null; };
+
+// ---- category correction by the call center
+function fillEdit(){
+  const list = cats.slice();
+  if (!list.some(c => c.name === cur.category)) list.push({ name: cur.category, dept: cur.dept, subs: cur.sub ? [cur.sub] : [], kind: cur.kind });
+  const groups = { hazard: "מפגעים", request: "פניות ובקשות" };
+  $("eCat").innerHTML = Object.keys(groups).map(k => `<optgroup label="${groups[k]}">` +
+    list.filter(c => kindOf(c) === k).map(c => `<option${c.name === cur.category ? " selected" : ""}>${esc(c.name)}</option>`).join("") + "</optgroup>").join("");
+  fillSubs(cur.sub);
+  $("eDept").value = cur.dept || ""; $("eAddr").value = cur.addr || "";
+  $("dEditBox").open = false;
+}
+function fillSubs(selected){
+  const c = cats.find(c => c.name === $("eCat").value);
+  const subs = (c && c.subs) ? c.subs.slice() : [];
+  if (selected && !subs.includes(selected)) subs.unshift(selected);
+  $("eSub").innerHTML = '<option value="">ללא</option>' + subs.map(s => `<option${s === selected ? " selected" : ""}>${esc(s)}</option>`).join("");
+}
+$("eCat").onchange = () => { fillSubs(""); const c = cats.find(c => c.name === $("eCat").value); if (c && c.dept) $("eDept").value = c.dept; };
 $("dSave").onclick = async () => {
   if (!cur) return;
   const status = $("dStatus").value, note = $("dNote").value.trim().slice(0,400);
+  const category = $("eCat").value.slice(0,60), sub = $("eSub").value.slice(0,60);
+  const dept = $("eDept").value.trim().slice(0,60), addr = $("eAddr").value.trim().slice(0,120);
+  const changes = [];
+  if (category !== cur.category || sub !== (cur.sub || "")) changes.push(`סיווג: ${cur.category}${cur.sub ? " · " + cur.sub : ""} ← ${category}${sub ? " · " + sub : ""}`);
+  if (dept !== (cur.dept || "")) changes.push(`מחלקה: ${cur.dept || "—"} ← ${dept || "—"}`);
+  if (addr !== (cur.addr || "")) changes.push("כתובת עודכנה");
   const { F, db } = fb;
   $("dSave").disabled = true; $("dErr").textContent = "";
   try {
     const b = F.writeBatch(db);
-    b.update(F.doc(db, "reports", cur.id), { status, note, updatedAt: F.serverTimestamp(),
-      history: F.arrayUnion({ status, at: new Date().toISOString(), note }) });
-    b.update(F.doc(db, "public", cur.id), { status });
+    const upd = { status, note, updatedAt: F.serverTimestamp(),
+      history: F.arrayUnion({ status, at: new Date().toISOString(), note, edit: changes.join(" · ") }) };
+    if (changes.length) Object.assign(upd, { category, sub, dept, addr });
+    b.update(F.doc(db, "reports", cur.id), upd);
+    if ((cur.kind || "hazard") === "hazard") b.update(F.doc(db, "public", cur.id), changes.length ? { status, category, sub } : { status });
     await b.commit();
     $("dErr").innerHTML = '<span class="ok">עודכן. התושב רואה את העדכון באפליקציה.</span>';
   } catch(e){ $("dErr").textContent = "העדכון נכשל: " + (e.code || e.message); }
@@ -183,17 +232,18 @@ function initAllMap(){
 function drawAll(){
   if (!allLayer) return;
   allLayer.clearLayers();
-  filtered().forEach(r => L.circleMarker([r.lat, r.lng], { radius: 8, color: (STATUS[r.status]||STATUS.new).color, fillOpacity: .8 })
+  filtered().filter(r => typeof r.lat === "number").forEach(r => L.circleMarker([r.lat, r.lng], { radius: 8, color: (STATUS[r.status]||STATUS.new).color, fillOpacity: .8 })
     .bindPopup(`<b>${esc(r.category)}</b>${r.sub ? "<br>" + esc(r.sub) : ""}<br>${esc(r.addr || "")}<br>${(STATUS[r.status]||STATUS.new).label}`)
     .on("click", () => { setTab("list"); openDetail(r.id); }).addTo(allLayer));
 }
 
 // ---- categories editor
-const toText = list => list.map(c => [c.name, c.dept || "", (c.subs || []).join(", ")].join(" | ")).join("\n");
+const toText = list => list.map(c => [c.name, c.dept || "", (c.subs || []).join(", "), kindOf(c) === "request" ? "פנייה" : "מפגע"].join(" | ")).join("\n");
 function fromText(t){
   return t.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-    const [name, dept, subs] = l.split("|").map(x => (x || "").trim());
-    return { name: name.slice(0,60), dept: (dept || "").slice(0,60), subs: (subs || "").split(",").map(s => s.trim()).filter(Boolean).slice(0,30) };
+    const [name, dept, subs, kind] = l.split("|").map(x => (x || "").trim());
+    return { name: name.slice(0,60), dept: (dept || "").slice(0,60), subs: (subs || "").split(",").map(s => s.trim()).filter(Boolean).slice(0,30),
+             kind: /פני|בקש|מידע|request/i.test(kind || "") ? "request" : "hazard" };
   }).filter(c => c.name);
 }
 function fillCatUI(){

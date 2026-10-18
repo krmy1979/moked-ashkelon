@@ -31,19 +31,23 @@
 
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="new" class="on">דיווח חדש</button>
-    <button data-tab="mine">הדיווחים שלי</button>
+    <button data-tab="mine">הפניות שלי</button>
     <button data-tab="map">מפת מפגעים</button>
   </nav>
 
   <!-- New report -->
   <section id="tab-new" hidden>
     <div class="card">
-      <h2>1. מה המפגע?</h2>
+      <div class="tabs" id="kindTabs">
+        <button data-kind="hazard" class="on">מפגע בעיר</button>
+        <button data-kind="request">פנייה, בקשה או מידע</button>
+      </div>
+      <h2 id="step1Title">1. מה המפגע?</h2>
       <div class="cats" id="cats"></div>
       <div class="chips" id="subs" hidden></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div class="card" style="margin-top:14px" id="locCard">
       <h2>2. איפה?</h2>
       <div class="row">
         <button id="gpsBtn">📍 השתמש במיקום שלי</button>
@@ -55,10 +59,13 @@
     </div>
 
     <div class="card" style="margin-top:14px">
-      <h2>3. פרטים ותמונה</h2>
-      <label for="desc">תיאור קצר</label>
+      <h2 id="step3Title">3. פרטים ותמונה</h2>
+      <label for="desc" id="descLabel">תיאור קצר</label>
       <textarea id="desc" maxlength="600" placeholder="מה ראיתם? כמה זמן זה ככה?"></textarea>
-      <label for="photo">תמונה (מומלץ מאוד)</label>
+      <label for="phone">טלפון לחזרה <span class="muted" id="phoneHint">(לא חובה)</span></label>
+      <input id="phone" type="tel" inputmode="tel" maxlength="20" placeholder="050-0000000" dir="ltr" style="text-align:right">
+      <div class="note" id="emergNote" hidden>במצב חירום או סכנה מיידית חייגו 100 (משטרה) או 101 (מד"א). המוקד העירוני זמין גם בטלפון 106.</div>
+      <label for="photo" id="photoLabel">תמונה (מומלץ מאוד)</label>
       <input type="file" id="photo" accept="image/*" capture="environment">
       <img id="photoPrev" class="photo-prev" alt="תצוגה מקדימה של התמונה" hidden>
       <div class="err" id="photoErr"></div>
@@ -73,9 +80,9 @@
 
   <!-- My reports -->
   <section class="card" id="tab-mine" hidden>
-    <h2>הדיווחים שלי</h2>
+    <h2>הפניות והדיווחים שלי</h2>
     <div id="mineList" class="row" style="flex-direction:column;align-items:stretch"></div>
-    <div class="note" id="mineEmpty">עדיין לא שלחת דיווחים.</div>
+    <div class="note" id="mineEmpty">עדיין לא שלחת דיווחים או פניות.</div>
   </section>
 
   <!-- Public map -->
@@ -88,9 +95,9 @@
 </main>
 
 <script type="module">
-import { initFirebase, googleSignIn, loadCategories, compressImage, fmtDate, esc, statusPill, STATUS, ASHKELON } from "./shared.js";
+import { initFirebase, googleSignIn, loadCategories, compressImage, fmtDate, esc, statusPill, STATUS, ASHKELON, kindOf } from "./shared.js";
 const $ = id => document.getElementById(id);
-let fb, user, cats = [], cat = null, sub = null, pos = null, photo = null;
+let fb, user, cats = [], cat = null, sub = null, pos = null, photo = null, kind = "hazard";
 let pickMap, pickMarker, pubMap, pubLayer, unsubMine = null, unsubPub = null;
 
 function showOnly(id){ for (const s of ["loading","loginCard"]) $(s).hidden = s !== id; }
@@ -104,9 +111,26 @@ function setTab(t){
 $("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
 
 // ---- categories
+$("kindTabs").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  kind = b.dataset.kind; cat = null; sub = null; applyKind(); renderCats();
+});
+function applyKind(){
+  const req = kind === "request";
+  for (const b of $("kindTabs").querySelectorAll("button")) b.classList.toggle("on", b.dataset.kind === kind);
+  $("step1Title").textContent = req ? "1. במה מדובר?" : "1. מה המפגע?";
+  $("locCard").hidden = req;
+  $("step3Title").textContent = req ? "2. פרטי הפנייה" : "3. פרטים ותמונה";
+  $("descLabel").textContent = req ? "מה תרצו לשאול או לבקש?" : "תיאור קצר";
+  $("desc").placeholder = req ? "כתבו כאן את הפנייה. אם תרצו שיחזרו אליכם, השאירו טלפון." : "מה ראיתם? כמה זמן זה ככה?";
+  $("photoLabel").textContent = req ? "צירוף תמונה או מסמך מצולם (לא חובה)" : "תמונה (מומלץ מאוד)";
+  $("phoneHint").textContent = req ? "(מומלץ, כדי שנוכל לחזור אליכם)" : "(לא חובה)";
+  $("emergNote").hidden = !req;
+  if (!req) setTimeout(() => pickMap && pickMap.invalidateSize(), 50);
+}
 function renderCats(){
   const box = $("cats"); box.textContent = "";
-  cats.forEach(c => {
+  cats.filter(c => kindOf(c) === kind).forEach(c => {
     const b = document.createElement("button"); b.textContent = c.name;
     b.classList.toggle("on", cat === c);
     b.onclick = () => { cat = c; sub = null; renderCats(); };
@@ -161,10 +185,13 @@ $("photo").onchange = async () => {
 // ---- send
 $("sendBtn").onclick = async () => {
   $("sendErr").textContent = ""; $("sendOk").hidden = true;
-  if (!cat) { $("sendErr").textContent = "בחרו סוג מפגע."; return; }
-  if (!pos) { $("sendErr").textContent = "סמנו את המיקום: לחצו על 'השתמש במיקום שלי' או על המפה."; return; }
+  const req = kind === "request";
+  if (!cat) { $("sendErr").textContent = req ? "בחרו את נושא הפנייה." : "בחרו סוג מפגע."; return; }
+  if (!req && !pos) { $("sendErr").textContent = "סמנו את המיקום: לחצו על 'השתמש במיקום שלי' או על המפה."; return; }
   const desc = $("desc").value.trim();
-  if (!desc && !photo && !sub) { $("sendErr").textContent = "הוסיפו תיאור קצר או תמונה."; return; }
+  const phone = $("phone").value.replace(/[^\d+\-\s]/g, "").trim().slice(0,20);
+  if (req && !desc && !sub) { $("sendErr").textContent = "כתבו את תוכן הפנייה."; return; }
+  if (!req && !desc && !photo && !sub) { $("sendErr").textContent = "הוסיפו תיאור קצר או תמונה."; return; }
   $("sendBtn").disabled = true; $("sendBtn").textContent = "שולח…";
   try {
     const { F, db } = fb;
@@ -172,17 +199,17 @@ $("sendBtn").onclick = async () => {
     const now = F.serverTimestamp();
     const b = F.writeBatch(db);
     b.set(F.doc(db, "reports", id), {
-      uid: user.uid, reporter: user.displayName || "", email: user.email || "",
+      uid: user.uid, reporter: user.displayName || "", email: user.email || "", phone, kind,
       category: cat.name, sub: sub || "", dept: cat.dept || "",
-      desc, addr: $("addr").value.trim().slice(0,120), lat: pos.lat, lng: pos.lng,
+      desc, addr: req ? "" : $("addr").value.trim().slice(0,120), lat: req ? null : pos.lat, lng: req ? null : pos.lng,
       photo: photo || "", status: "new", note: "", createdAt: now, updatedAt: now,
       history: [{ status: "new", at: new Date().toISOString(), note: "" }]
     });
-    b.set(F.doc(db, "public", id), { category: cat.name, sub: sub || "", lat: pos.lat, lng: pos.lng, status: "new", createdAt: now });
+    if (!req) b.set(F.doc(db, "public", id), { category: cat.name, sub: sub || "", lat: pos.lat, lng: pos.lng, status: "new", createdAt: now });
     await b.commit();
-    $("sendOk").textContent = "הדיווח נשלח למוקד. תודה! אפשר לעקוב אחריו בלשונית 'הדיווחים שלי'.";
+    $("sendOk").textContent = (req ? "הפנייה נשלחה למוקד." : "הדיווח נשלח למוקד. תודה!") + " אפשר לעקוב בלשונית 'הפניות שלי'.";
     $("sendOk").hidden = false;
-    cat = null; sub = null; photo = null; $("desc").value = ""; $("addr").value = ""; $("photo").value = ""; $("photoPrev").hidden = true;
+    cat = null; sub = null; photo = null; $("desc").value = ""; $("addr").value = ""; $("phone").value = ""; $("photo").value = ""; $("photoPrev").hidden = true;
     renderCats();
   } catch(e){
     $("sendErr").textContent = "השליחה נכשלה. בדקו חיבור לאינטרנט ונסו שוב.";
@@ -204,7 +231,7 @@ function watchMine(){
         ${r.desc ? `<div>${esc(r.desc)}</div>` : ""}
         ${r.note ? `<div><b>תגובת המוקד:</b> ${esc(r.note)}</div>` : ""}
         ${r.photo ? `<img class="photo-prev" src="${esc(r.photo)}" alt="תמונת המפגע">` : ""}
-        <ol class="timeline">${(r.history||[]).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}</li>`).join("")}</ol>
+        <ol class="timeline">${(r.history||[]).map(h => `<li>${esc((STATUS[h.status]||{}).label || h.status)} · ${esc(fmtDate(new Date(h.at)))}${h.note ? " · " + esc(h.note) : ""}${h.edit ? " · " + esc(h.edit) : ""}</li>`).join("")}</ol>
       </div>`).join("");
   }, () => { $("mineEmpty").textContent = "לא הצלחתי לטעון את הדיווחים."; $("mineEmpty").hidden = false; });
 }
@@ -240,7 +267,7 @@ $("logoutBtn").onclick = () => fb.A.signOut(fb.auth);
     if (unsubMine) { unsubMine(); unsubMine = null; }
     if (!u) { showOnly("loginCard"); $("tabs").hidden = true; for (const x of ["new","mine","map"]) $("tab-" + x).hidden = true; $("logoutBtn").hidden = true; return; }
     showOnly(null); $("tabs").hidden = false; $("logoutBtn").hidden = false;
-    cats = await loadCategories(fb); renderCats();
+    cats = await loadCategories(fb); applyKind(); renderCats();
     if (!pickMap) initPickMap();
     setTab("new");
     watchMine();

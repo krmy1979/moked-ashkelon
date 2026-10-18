@@ -12,14 +12,17 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.status == 'new'
-        && request.resource.data.keys().hasOnly(['uid','reporter','email','category','sub','dept','desc','addr','lat','lng','photo','status','note','createdAt','updatedAt','history'])
+        && request.resource.data.keys().hasOnly(['uid','reporter','email','phone','kind','category','sub','dept','desc','addr','lat','lng','photo','status','note','createdAt','updatedAt','history'])
+        && request.resource.data.kind in ['hazard','request']
+        && request.resource.data.phone is string && request.resource.data.phone.size() <= 20
         && request.resource.data.category is string && request.resource.data.category.size() <= 60
         && request.resource.data.desc is string && request.resource.data.desc.size() <= 600
         && request.resource.data.photo is string && request.resource.data.photo.size() <= 300000
-        && request.resource.data.lat is number && request.resource.data.lng is number
+        && ((request.resource.data.lat is number && request.resource.data.lng is number)
+            || (request.resource.data.kind == 'request' && request.resource.data.lat == null && request.resource.data.lng == null))
         && request.resource.data.history.size() == 1;
       allow update: if isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','note','updatedAt','history'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','note','updatedAt','history','category','sub','dept','addr'])
         && request.resource.data.status in ['new','in_progress','done','rejected'];
       allow delete: if isAdmin();
     }
@@ -31,7 +34,7 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/reports/$(id)).data.uid == request.auth.uid
         && request.resource.data.keys().hasOnly(['category','sub','lat','lng','status','createdAt'])
         && request.resource.data.status == 'new';
-      allow update: if isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+      allow update: if isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','category','sub']);
       allow delete: if isAdmin();
     }
 
